@@ -2,7 +2,6 @@ package main
 
 import (
 	"fmt"
-	"regexp"
 	"strings"
 )
 
@@ -21,9 +20,27 @@ const (
 	logoWidth = 36
 )
 
-var ansiRe = regexp.MustCompile(`\x1b\[[0-9;]*m`)
+func stripANSI(s string) string {
+	var b strings.Builder
+	b.Grow(len(s))
 
-func visLen(s string) int { return len(ansiRe.ReplaceAllString(s, "")) }
+	for i := 0; i < len(s); i++ {
+		if s[i] == 0x1b && i+1 < len(s) && s[i+1] == '[' {
+			i += 2
+			for i < len(s) && ((s[i] >= '0' && s[i] <= '9') || s[i] == ';') {
+				i++
+			}
+			if i < len(s) && s[i] == 'm' {
+				continue
+			}
+		}
+		b.WriteByte(s[i])
+	}
+
+	return b.String()
+}
+
+func visLen(s string) int { return len(stripANSI(s)) }
 
 var rawLogo = []string{
 	c1 + `        .................` + reset,
@@ -107,8 +124,8 @@ func multi(key string, vals []string) []string {
 
 func infoLines(info Info) []string {
 	header := fmt.Sprintf("%s%s%s%s@%s%s%s",
-		bold+colKey, info.User, reset+colSep,
-		reset+bold+colKey, info.Hostname, reset, reset)
+			      bold+colKey, info.User, reset+colSep,
+		       reset+bold+colKey, info.Hostname, reset, reset)
 	divider := colKey + strings.Repeat("─", len(info.User)+1+len(info.Hostname)) + reset
 
 	diskVal := info.Disk
@@ -141,7 +158,7 @@ func infoLines(info Info) []string {
 		lines = append(lines, bar(info.SwapBar))
 	}
 	return append(lines,
-		kv("Disk", diskVal), bar(info.DiskBar),
-		kv("Local IP", info.LocalIP),
-		"", "            "+info.Colors)
+		      kv("Disk", diskVal), bar(info.DiskBar),
+		      kv("Local IP", info.LocalIP),
+		      "", "            "+info.Colors)
 }
