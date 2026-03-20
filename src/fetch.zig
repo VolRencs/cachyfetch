@@ -444,17 +444,19 @@ fn wlPutStr(b: []u8, off: *usize, s: []const u8) void {
     off.* += padded;
 }
 
-fn wlSend(sock: std.net.Stream, obj: u32, op: u16, body: []const u8) void {
-    const sz: u32 = @intCast(8 + body.len);
+fn wlSend(sock: std.net.Stream, obj: u32, op: u16, body: []const u8) !void {
+    const sz: u32 = @intCast(u32, 8 + body.len);
 
     var hdr: [8]u8 = undefined;
     std.mem.writeInt(u32, hdr[0..4], obj, .little);
     std.mem.writeInt(u32, hdr[4..8], (sz << 16) | op, .little);
 
     var wbuf: [4096]u8 = undefined;
-    const writer = sock.writer(&wbuf);
-    try writer.writeAll(&hdr);
-    try writer.writeAll(body);
+    var writer = sock.writer(&wbuf);
+
+    try writer.splat(&hdr);
+    try writer.splat(body);
+    try writer.flush();
 }
 
 fn wlGet32(b: []const u8, off: *usize) u32 {
@@ -522,13 +524,12 @@ fn waylandMonitors(a: A) [][]const u8 {
     var cb2:   u32 = 0;
     var rbuf: [4096]u8 = undefined;
     var sock_buf: [4096]u8 = undefined;
-    const reader = sock.reader(&sock_buf);
+    var reader = sock.reader(&sock_buf);
 
     done: while (true) {
         var hdr: [8]u8 = undefined;
 
-        const hn = try reader.readAll(&hdr);
-        if (hn != 8) break;
+        try reader.takeExact(&hdr);
 
         const sender = std.mem.readInt(u32, hdr[0..4], .little);
         const so     = std.mem.readInt(u32, hdr[4..8], .little);
@@ -543,8 +544,7 @@ fn waylandMonitors(a: A) [][]const u8 {
         const body = rbuf[0..bsz];
 
         if (bsz > 0) {
-            const bn = try reader.readAll(body);
-            if (bn != bsz) break;
+            try reader.takeExact(body);
         }
 
         const kind: u8 = if (sender < MAX) kinds[sender] else 0;
