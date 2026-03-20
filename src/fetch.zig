@@ -451,14 +451,9 @@ fn wlSend(sock: std.net.Stream, obj: u32, op: u16, body: []const u8) !void {
     std.mem.writeInt(u32, hdr[0..4], obj, .little);
     std.mem.writeInt(u32, hdr[4..8], (sz << 16) | op, .little);
 
-    var buf_writer = std.io.BufferedWriter(4096, @TypeOf(sock.writer())){
-        .unbuffered_writer = sock.writer(),
-    };
-    var writer = buf_writer.writer();
-
+    var writer = sock.writer();
     try writer.writeAll(std.mem.asBytes(&hdr));
     try writer.writeAll(body);
-    try buf_writer.flush();
 }
 
 fn wlGet32(b: []const u8, off: *usize) u32 {
