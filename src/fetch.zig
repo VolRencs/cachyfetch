@@ -450,7 +450,9 @@ fn wlSend(sock: std.net.Stream, obj: u32, op: u16, body: []const u8) void {
     std.mem.writeInt(u32, hdr[0..4], obj, .little);
     std.mem.writeInt(u32, hdr[4..8], (sz << 16) | op, .little);
 
-    var writer = sock.writer();
+    var wbuf: [4096]u8 = undefined;
+    var writer = sock.writer(&wbuf);
+
     writer.writeAll(&hdr) catch {};
     writer.writeAll(body) catch {};
 }
@@ -519,7 +521,8 @@ fn waylandMonitors(a: A) [][]const u8 {
     var phase: u8 = 1;
     var cb2:   u32 = 0;
     var rbuf: [4096]u8 = undefined;
-    var reader = sock.reader();
+    var sock_buf: [4096]u8 = undefined;
+    var reader = sock.reader(&sock_buf);
 
     done: while (true) {
         var hdr: [8]u8 = undefined;
@@ -529,11 +532,12 @@ fn waylandMonitors(a: A) [][]const u8 {
 
         const sender = std.mem.readInt(u32, hdr[0..4], .little);
         const so     = std.mem.readInt(u32, hdr[4..8], .little);
+
         const msg_sz = so >> 16;
         if (msg_sz < 8) break;
 
-        const bsz  = msg_sz - 8;
-        const op   = @as(u16, @truncate(so));
+        const bsz = msg_sz - 8;
+        const op  = @as(u16, @truncate(so));
 
         if (bsz > rbuf.len) break;
         const body = rbuf[0..bsz];
@@ -550,40 +554,60 @@ fn waylandMonitors(a: A) [][]const u8 {
             const gn    = wlGet32(body, &off);
             const iface = wlGetStr(body, &off);
             const ver   = wlGet32(body, &off);
+
             if (mem.eql(u8, iface, "wl_output")) {
                 const oid = nid; nid += 1;
                 if (oid < MAX) kinds[oid] = 3;
+
                 o = 0;
                 wlPut32(&b, &o, gn);
                 wlPutStr(&b, &o, "wl_output");
                 wlPut32(&b, &o, @min(ver, 4));
                 wlPut32(&b, &o, oid);
+
                 wlSend(sock, REG, 0, b[0..o]);
                 outs.append(a, .{ .id = oid }) catch {};
             }
+
         } else if (kind == 2 and op == 0) {
+
             if (phase == 1) {
                 phase = 2;
+
                 cb2 = nid; nid += 1;
                 if (cb2 < MAX) kinds[cb2] = 2;
-                o = 0; wlPut32(&b, &o, cb2);
+
+                o = 0;
+                wlPut32(&b, &o, cb2);
                 wlSend(sock, 1, 0, b[0..o]);
+
             } else if (sender == cb2) {
                 break :done;
             }
+
         } else if (kind == 3) {
+
             for (outs.items) |*out| {
                 if (out.id != sender) continue;
+
                 var off: usize = 0;
+
                 if (op == 1) {
                     const flags = wlGet32(body, &off);
                     const w     = wlGetI32(body, &off);
                     const h     = wlGetI32(body, &off);
                     const r     = wlGetI32(body, &off);
-                    if (flags & 1 != 0) { out.w = w; out.h = h; out.hz = r; }
+
+                    if (flags & 1 != 0) {
+                        out.w = w;
+                        out.h = h;
+                        out.hz = r;
+                    }
+
                 } else if (op == 4) {
                     out.name = wlGetStr(body, &off);
                 }
+
                 break;
             }
         }
