@@ -454,8 +454,8 @@ fn wlSend(sock: std.net.Stream, obj: u32, op: u16, body: []const u8) void {
     var wbuf: [4096]u8 = undefined;
     var writer = sock.writer(&wbuf);
 
-    writer.write(&hdr) catch {};
-    writer.write(body) catch {};
+    writer.writeAll(&hdr) catch {};
+    writer.writeAll(body) catch {};
 }
 
 fn wlGet32(b: []const u8, off: *usize) u32 {
@@ -523,12 +523,12 @@ fn waylandMonitors(a: A) [][]const u8 {
     var cb2:   u32 = 0;
     var rbuf: [4096]u8 = undefined;
     var sock_buf: [4096]u8 = undefined;
-    var reader = (sock.reader(&sock_buf)).reader;
+    var reader = sock.reader(&sock_buf);
 
     done: while (true) {
         var hdr: [8]u8 = undefined;
 
-        const hn = reader.read(&hdr) catch break;
+        const hn = reader.readAll(&hdr) catch break;
         if (hn != 8) break;
 
         const sender = std.mem.readInt(u32, hdr[0..4], .little);
@@ -544,7 +544,7 @@ fn waylandMonitors(a: A) [][]const u8 {
         const body = rbuf[0..bsz];
 
         if (bsz > 0) {
-            const bn = reader.read(body) catch break;
+            const bn = reader.readAll(body) catch break;
             if (bn != bsz) break;
         }
 
