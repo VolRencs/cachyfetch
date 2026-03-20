@@ -4,7 +4,6 @@ const mem   = std.mem;
 const fmt   = std.fmt;
 const fs    = std.fs;
 const linux = std.os.linux;
-const io    = std.io;
 
 pub const Info = struct {
     user:     []const u8   = "user",
@@ -446,14 +445,11 @@ fn wlPutStr(b: []u8, off: *usize, s: []const u8) void {
 
 fn wlSend(sock: std.net.Stream, obj: u32, op: u16, body: []const u8) void {
     const sz: u32 = @intCast(8 + body.len);
-
     var hdr: [8]u8 = undefined;
     std.mem.writeInt(u32, hdr[0..4], obj, .little);
     std.mem.writeInt(u32, hdr[4..8], (sz << 16) | op, .little);
-
-    var wbuf: [4096]u8 = undefined;
-    sock.writer(&wbuf).writeAll(&hdr) catch {};
-    sock.writer(&wbuf).writeAll(body) catch {};
+    sock.writer().writeAll(&hdr) catch {};
+    sock.writer().writeAll(body) catch {};
 }
 
 fn wlGet32(b: []const u8, off: *usize) u32 {
@@ -511,38 +507,34 @@ fn waylandMonitors(a: A) [][]const u8 {
     var b: [64]u8 = undefined;
     var o: usize = 0;
 
+    // wl_display.get_registry(REG)
     o = 0; wlPut32(&b, &o, REG);
     wlSend(sock, 1, 1, b[0..o]);
 
+    // wl_display.sync(CB1)
     o = 0; wlPut32(&b, &o, CB1);
     wlSend(sock, 1, 0, b[0..o]);
 
     var phase: u8 = 1;
     var cb2:   u32 = 0;
     var rbuf: [4096]u8 = undefined;
-    var sock_buf: [4096]u8 = undefined;
-    const reader = io.Reader{ .bytes = &sock_buf };
 
     done: while (true) {
         var hdr: [8]u8 = undefined;
-
-        const hn = sock.reader(&sock_buf).readAll(&hdr) catch break;
+        const hn = sock.reader().readAll(&hdr) catch break;
         if (hn != 8) break;
 
         const sender = std.mem.readInt(u32, hdr[0..4], .little);
         const so     = std.mem.readInt(u32, hdr[4..8], .little);
-
         const msg_sz = so >> 16;
         if (msg_sz < 8) break;
-
-        const bsz = msg_sz - 8;
-        const op  = @as(u16, @truncate(so));
+        const bsz  = msg_sz - 8;
+        const op   = @as(u16, @truncate(so));
 
         if (bsz > rbuf.len) break;
         const body = rbuf[0..bsz];
-
         if (bsz > 0) {
-            const bn = try reader.readAll(body);
+            const bn = sock.reader().readAll(body) catch break;
             if (bn != bsz) break;
         }
 
@@ -553,7 +545,6 @@ fn waylandMonitors(a: A) [][]const u8 {
             const gn    = wlGet32(body, &off);
             const iface = wlGetStr(body, &off);
             const ver   = wlGet32(body, &off);
-
             if (mem.eql(u8, iface, "wl_output")) {
                 const oid = nid; nid += 1;
                 if (oid < MAX) kinds[oid] = 3;
@@ -563,50 +554,32 @@ fn waylandMonitors(a: A) [][]const u8 {
                 wlPutStr(&b, &o, "wl_output");
                 wlPut32(&b, &o, @min(ver, 4));
                 wlPut32(&b, &o, oid);
-
                 wlSend(sock, REG, 0, b[0..o]);
                 outs.append(a, .{ .id = oid }) catch {};
             }
-
-        } else if (kind == 2 and op == 0) {
-
+        } else if (kind == 2 and op == 0) { // callback.done
             if (phase == 1) {
                 phase = 2;
-
                 cb2 = nid; nid += 1;
                 if (cb2 < MAX) kinds[cb2] = 2;
-
-                o = 0;
-                wlPut32(&b, &o, cb2);
+                o = 0; wlPut32(&b, &o, cb2);
                 wlSend(sock, 1, 0, b[0..o]);
-
             } else if (sender == cb2) {
                 break :done;
             }
-
-        } else if (kind == 3) {
-
+        } else if (kind == 3) { // wl_output event
             for (outs.items) |*out| {
                 if (out.id != sender) continue;
-
                 var off: usize = 0;
-
                 if (op == 1) {
                     const flags = wlGet32(body, &off);
                     const w     = wlGetI32(body, &off);
                     const h     = wlGetI32(body, &off);
                     const r     = wlGetI32(body, &off);
-
-                    if (flags & 1 != 0) {
-                        out.w = w;
-                        out.h = h;
-                        out.hz = r;
-                    }
-
+                    if (flags & 1 != 0) { out.w = w; out.h = h; out.hz = r; }
                 } else if (op == 4) {
                     out.name = wlGetStr(body, &off);
                 }
-
                 break;
             }
         }
