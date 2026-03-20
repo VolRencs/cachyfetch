@@ -445,7 +445,7 @@ fn wlPutStr(b: []u8, off: *usize, s: []const u8) void {
 }
 
 fn wlSend(sock: std.net.Stream, obj: u32, op: u16, body: []const u8) !void {
-    const sz: u32 = 8 + @as(u32, body.len);
+    const sz: u32 = 8 + @intCast(u32, body.len);
 
     var hdr: [8]u8 = undefined;
     std.mem.writeInt(u32, hdr[0..4], obj, .little);
@@ -515,7 +515,7 @@ fn waylandMonitors(a: A) [][]const u8 {
     var o: usize = 0;
 
     o = 0; wlPut32(&b, &o, REG);
-    wlSend(sock, 1, 1, b[0..o]);
+    try wlSend(sock, 1, 1, b[0..o]);
 
     o = 0; wlPut32(&b, &o, CB1);
     wlSend(sock, 1, 0, b[0..o]);
