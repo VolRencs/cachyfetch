@@ -3,36 +3,37 @@ const Allocator = std.mem.Allocator;
 const mem = std.mem;
 const fmt = std.fmt;
 const fs  = std.fs;
+const linux = std.os.linux;
 
 pub const Info = struct {
-    user:      []const u8 = "user",
-    hostname:  []const u8 = "localhost",
-    os:        []const u8 = "CachyOS",
-    kernel:    []const u8 = "unknown",
-    uptime:    []const u8 = "unknown",
-    packages:  []const u8 = "unknown",
-    shell:     []const u8 = "unknown",
-    terminal:  []const u8 = "unknown",
-    de:        []const u8 = "",
-    wm:        []const u8 = "",
-    wm_theme:  []const u8 = "unknown",
-    theme:     []const u8 = "unknown",
-    icons:     []const u8 = "unknown",
-    font:      []const u8 = "unknown",
-    cursor:    []const u8 = "unknown",
-    locale:    []const u8 = "unknown",
-    cpu:       []const u8 = "unknown",
-    gpu:       [][]const u8 = &.{},
-    monitors:  [][]const u8 = &.{},
-    memory:    []const u8 = "unknown",
-    mem_bar:   []const u8 = "",
-    swap:      []const u8 = "disabled",
-    swap_bar:  []const u8 = "",
-    disk:      []const u8 = "unknown",
-    disk_bar:  []const u8 = "",
-    disk_fs:   []const u8 = "",
-    local_ip:  []const u8 = "unknown",
-    colors:    []const u8 = "",
+    user:     []const u8 = "user",
+    hostname: []const u8 = "localhost",
+    os:       []const u8 = "CachyOS",
+    kernel:   []const u8 = "unknown",
+    uptime:   []const u8 = "unknown",
+    packages: []const u8 = "unknown",
+    shell:    []const u8 = "unknown",
+    terminal: []const u8 = "unknown",
+    de:       []const u8 = "",
+    wm:       []const u8 = "",
+    wm_theme: []const u8 = "unknown",
+    theme:    []const u8 = "unknown",
+    icons:    []const u8 = "unknown",
+    font:     []const u8 = "unknown",
+    cursor:   []const u8 = "unknown",
+    locale:   []const u8 = "unknown",
+    cpu:      []const u8 = "unknown",
+    gpu:      [][]const u8 = &.{},
+    monitors: [][]const u8 = &.{},
+    memory:   []const u8 = "unknown",
+    mem_bar:  []const u8 = "",
+    swap:     []const u8 = "disabled",
+    swap_bar: []const u8 = "",
+    disk:     []const u8 = "unknown",
+    disk_bar: []const u8 = "",
+    disk_fs:  []const u8 = "",
+    local_ip: []const u8 = "unknown",
+    colors:   []const u8 = "",
 };
 
 // ── primitives ────────────────────────────────────────────────────────────────
@@ -41,10 +42,6 @@ fn readFile(a: Allocator, path: []const u8) []const u8 {
     const f = fs.openFileAbsolute(path, .{}) catch return "";
     defer f.close();
     return f.readToEndAlloc(a, 4 << 20) catch "";
-}
-
-fn procPath(a: Allocator, pid: u32, name: []const u8) []const u8 {
-    return fmt.allocPrint(a, "/proc/{d}/{s}", .{ pid, name }) catch "";
 }
 
 fn run(a: Allocator, argv: []const []const u8) []const u8 {
@@ -71,23 +68,44 @@ fn trim(s: []const u8) []const u8 {
 
 fn containsLower(s: []const u8, needle: []const u8) bool {
     var i: usize = 0;
-    while (i + needle.len <= s.len) : (i += 1) {
+    while (i + needle.len <= s.len) : (i += 1)
         if (std.ascii.eqlIgnoreCase(s[i .. i + needle.len], needle)) return true;
-    }
     return false;
 }
 
-fn isKDE(de: []const u8)   bool { return containsLower(de, "kde")   or containsLower(de, "plasma"); }
+fn isKDE(de: []const u8)   bool { return containsLower(de, "kde") or containsLower(de, "plasma"); }
 fn isGNOME(de: []const u8) bool { return containsLower(de, "gnome"); }
 
-// ── ini / gtk / kde helpers ───────────────────────────────────────────────────
+// ── /proc ─────────────────────────────────────────────────────────────────────
+
+fn pidPath(a: Allocator, pid: u32, name: []const u8) []const u8 {
+    return fmt.allocPrint(a, "/proc/{d}/{s}", .{ pid, name }) catch "";
+}
+
+fn selfPid() u32 {
+    return @intCast(linux.getpid());
+}
+
+fn pidPPid(a: Allocator, pid: u32) u32 {
+    const data = readFile(a, pidPath(a, pid, "status"));
+    var it = mem.splitScalar(u8, data, '\n');
+    while (it.next()) |line|
+        if (mem.startsWith(u8, line, "PPid:"))
+            return fmt.parseInt(u32, trim(line[5..]), 10) catch 0;
+    return 0;
+}
+
+fn pidComm(a: Allocator, pid: u32) []const u8 {
+    return trim(readFile(a, pidPath(a, pid, "comm")));
+}
+
+// ── ini / gtk / kde ───────────────────────────────────────────────────────────
 
 fn iniLine(data: []const u8, prefix: []const u8) []const u8 {
     var it = mem.splitScalar(u8, data, '\n');
-    while (it.next()) |line| {
+    while (it.next()) |line|
         if (mem.startsWith(u8, line, prefix))
             return mem.trim(u8, line[prefix.len..], "\"");
-    }
     return "";
 }
 
@@ -97,10 +115,7 @@ fn iniGet(data: []const u8, section: []const u8, key: []const u8) []const u8 {
     while (it.next()) |raw| {
         const line = trim(raw);
         if (line.len == 0) continue;
-        if (line[0] == '[') {
-            in_sec = std.ascii.eqlIgnoreCase(line, section);
-            continue;
-        }
+        if (line[0] == '[') { in_sec = std.ascii.eqlIgnoreCase(line, section); continue; }
         if (in_sec and mem.startsWith(u8, line, key)) {
             const rest = line[key.len..];
             if (rest.len > 0 and rest[0] == '=') return rest[1..];
@@ -136,7 +151,7 @@ fn gtkFile(a: Allocator, path: []const u8, key: []const u8) []const u8 {
 
 fn joinParts(a: Allocator, qt: []const u8, g2: []const u8, g3: []const u8) []const u8 {
     var parts: std.ArrayList([]const u8) = .{};
-    if (qt.len > 0) parts.append(a, fmt.allocPrint(a, "{s} [Qt]", .{qt})   catch "") catch {};
+    if (qt.len > 0) parts.append(a, fmt.allocPrint(a, "{s} [Qt]",     .{qt}) catch "") catch {};
     if (g2.len > 0 and mem.eql(u8, g2, g3)) {
         parts.append(a, fmt.allocPrint(a, "{s} [GTK2/3]", .{g2}) catch "") catch {};
     } else {
@@ -147,36 +162,17 @@ fn joinParts(a: Allocator, qt: []const u8, g2: []const u8, g3: []const u8) []con
     return mem.join(a, ", ", parts.items) catch "unknown";
 }
 
-fn gtkPair(a: Allocator, key: []const u8, g2paths: []const []const u8, g3paths: []const []const u8, de: []const u8, schema: []const u8, gsKey: []const u8) struct { []const u8, []const u8 } {
+fn gtkPair(a: Allocator, key: []const u8, g2p: []const []const u8, g3p: []const []const u8, de: []const u8, schema: []const u8, gsKey: []const u8) struct { []const u8, []const u8 } {
     var g2: []const u8 = "";
-    for (g2paths) |p| { g2 = gtkFile(a, p, key); if (g2.len > 0) break; }
+    for (g2p) |p| { g2 = gtkFile(a, p, key); if (g2.len > 0) break; }
     if (g2.len == 0 and isGNOME(de)) g2 = gsGet(a, schema, gsKey);
     var g3: []const u8 = "";
-    for (g3paths) |p| { g3 = gtkFile(a, p, key); if (g3.len > 0) break; }
+    for (g3p) |p| { g3 = gtkFile(a, p, key); if (g3.len > 0) break; }
     if (g3.len == 0 and isGNOME(de)) g3 = gsGet(a, schema, gsKey);
     return .{ g2, g3 };
 }
 
-// ── /proc helpers ─────────────────────────────────────────────────────────────
-
-fn parsePPid(data: []const u8) u32 {
-    var it = mem.splitScalar(u8, data, '\n');
-    while (it.next()) |line| {
-        if (mem.startsWith(u8, line, "PPid:"))
-            return fmt.parseInt(u32, trim(line[5..]), 10) catch 0;
-    }
-    return 0;
-}
-
-fn procComm(a: Allocator, pid: u32) []const u8 {
-    return trim(readFile(a, procPath(a, pid, "comm")));
-}
-
-fn procPPid(a: Allocator, pid: u32) u32 {
-    return parsePPid(readFile(a, procPath(a, pid, "status")));
-}
-
-// ── system info ───────────────────────────────────────────────────────────────
+// ── system ────────────────────────────────────────────────────────────────────
 
 fn uptimeStr(a: Allocator) []const u8 {
     const data = readFile(a, "/proc/uptime");
@@ -184,20 +180,20 @@ fn uptimeStr(a: Allocator) []const u8 {
     const t    = @as(u64, @intFromFloat(secs));
     var buf: std.ArrayList(u8) = .{};
     const w = buf.writer(a);
-    if (t / 86400 > 0) fmt.format(w, "{d}d ", .{t / 86400})       catch {};
-    if ((t / 3600) % 24 > 0) fmt.format(w, "{d}h ", .{(t / 3600) % 24}) catch {};
+    if (t / 86400        > 0) fmt.format(w, "{d}d ", .{t / 86400})        catch {};
+    if ((t / 3600) % 24  > 0) fmt.format(w, "{d}h ", .{(t / 3600) % 24}) catch {};
     fmt.format(w, "{d}m", .{(t / 60) % 60}) catch {};
     return buf.toOwnedSlice(a) catch "unknown";
 }
 
 fn isShellName(n: []const u8) bool {
-    for (&[_][]const u8{ "bash","zsh","fish","sh","dash","ksh","tcsh","csh" }) |s|
+    for (&[_][]const u8{ "bash","zsh","fish","sh","dash","ksh","tcsh","csh","nushell","nu" }) |s|
         if (std.ascii.eqlIgnoreCase(n, s)) return true;
     return false;
 }
 
 fn termName(a: Allocator) []const u8 {
-    // 1. terminals that set a unique env var
+    // env vars set only by specific terminals
     for (&[_][2][]const u8{
         .{ "KITTY_WINDOW_ID",     "kitty"     },
         .{ "ALACRITTY_SOCKET",    "alacritty" },
@@ -212,15 +208,18 @@ fn termName(a: Allocator) []const u8 {
         if (v.len > 0) return v;
     }
 
-    // 2. walk: cachyfetch → shell → terminal emulator
-    const self_ppid  = procPPid(a, 0);   // ppid of cachyfetch = shell
-    const shell_ppid = procPPid(a, self_ppid); // ppid of shell = terminal
-    if (shell_ppid > 1) {
-        const name = procComm(a, shell_ppid);
+    // Walk process tree: self → shell → terminal emulator
+    // selfPid() gives our real PID, then we go up two levels.
+    const my_pid    = selfPid();
+    const shell_pid = pidPPid(a, my_pid);   // parent of cachyfetch = shell
+    const term_pid  = pidPPid(a, shell_pid); // parent of shell = terminal
+    if (term_pid > 1) {
+        const name = pidComm(a, term_pid);
         if (name.len > 0 and !isShellName(name)) return name;
     }
 
-    return envOr(a, "TERM", "unknown");
+    // $TERM is a protocol name (xterm-256color), not a terminal name — skip it
+    return "unknown";
 }
 
 fn deAndWM(a: Allocator) struct { []const u8, []const u8 } {
@@ -233,7 +232,7 @@ fn deAndWM(a: Allocator) struct { []const u8, []const u8 } {
         "hyprland","sway","i3","bspwm","openbox","awesome","dwm",
         "qtile","herbstluftwm","xmonad","river","niri",
     };
-    const known = [_][]const u8{
+    const known_wms = [_][]const u8{
         "kwin_wayland","kwin_x11","mutter","gnome-shell","xfwm4","muffin","marco",
         "hyprland","sway","i3","bspwm","openbox","awesome","dwm",
         "qtile","herbstluftwm","xmonad","river","niri",
@@ -244,13 +243,11 @@ fn deAndWM(a: Allocator) struct { []const u8, []const u8 } {
         if (entry.kind != .directory) continue;
         const name = trim(readFile(a, fmt.allocPrint(a, "/proc/{s}/comm", .{entry.name}) catch ""));
         if (name.len == 0) continue;
-        const found = for (known) |k| {
-            if (std.ascii.eqlIgnoreCase(name, k)) break true;
-        } else false;
+        var found = false;
+        for (known_wms) |k| if (std.ascii.eqlIgnoreCase(name, k)) { found = true; break; };
         if (!found) continue;
-        if (de.len == 0) for (standalone) |s| {
-            if (std.ascii.eqlIgnoreCase(name, s)) { de = name; break; }
-        };
+        if (de.len == 0) for (standalone) |s|
+            if (std.ascii.eqlIgnoreCase(name, s)) { de = name; break; };
         return .{ de, name };
     }
     return .{ de, "" };
@@ -282,9 +279,9 @@ fn cpuInfo(a: Allocator) []const u8 {
         if (mem.startsWith(u8, line, "processor")) cores += 1;
     }
     if (model.len == 0) return "unknown";
-    const freq_data = readFile(a, "/sys/devices/system/cpu/cpu0/cpufreq/scaling_max_freq");
-    if (freq_data.len > 0) {
-        if (fmt.parseFloat(f64, trim(freq_data))) |khz| {
+    const freq_raw = readFile(a, "/sys/devices/system/cpu/cpu0/cpufreq/scaling_max_freq");
+    if (freq_raw.len > 0) {
+        if (fmt.parseFloat(f64, trim(freq_raw))) |khz| {
             return fmt.allocPrint(a, "{s} ({d}) @ {d:.2} GHz", .{ model, cores, khz / 1e6 }) catch model;
         } else |_| {}
     }
@@ -299,6 +296,8 @@ fn replaceAll(a: Allocator, s: []const u8, needle: []const u8, rep: []const u8) 
     return buf;
 }
 
+// ── memory / disk / ip ────────────────────────────────────────────────────────
+
 const MemVals = struct { total: f64, available: f64, swap_total: f64, swap_free: f64 };
 
 fn memVals(a: Allocator) MemVals {
@@ -307,13 +306,13 @@ fn memVals(a: Allocator) MemVals {
     while (it.next()) |line| {
         var f = mem.splitAny(u8, line, " \t");
         var key: []const u8 = "";
-        var i: usize = 0;
-        var val: f64 = 0;
+        var idx: usize = 0;
+        var val: f64   = 0;
         while (f.next()) |tok| {
             if (tok.len == 0) continue;
-            if (i == 0) { key = tok; }
-            else if (i == 1) { val = fmt.parseFloat(f64, tok) catch 0; }
-            i += 1;
+            if (idx == 0) key = tok
+            else if (idx == 1) val = fmt.parseFloat(f64, tok) catch 0;
+            idx += 1;
         }
         if      (mem.eql(u8, key, "MemTotal:"))     mv.total      = val
         else if (mem.eql(u8, key, "MemAvailable:")) mv.available  = val
@@ -362,31 +361,26 @@ fn diskInfo(a: Allocator) DiskResult {
     };
 }
 
-// Fixed: check original line indentation BEFORE trimming to distinguish
-// interface header lines (start with digit) from address lines (indented).
 fn localIP(a: Allocator) []const u8 {
     const out = run(a, &.{ "ip", "-4", "addr", "show" });
     var it    = mem.splitScalar(u8, out, '\n');
     var iface: []const u8 = "";
-    while (it.next()) |raw_line| {
-        if (raw_line.len == 0) continue;
-        const is_iface_line = std.ascii.isDigit(raw_line[0]);
-        const line = trim(raw_line);
-        if (line.len == 0) continue;
-        if (is_iface_line) {
-            // "2: eth0: <FLAGS> ..." — get second field, strip trailing colon
-            var f = mem.splitScalar(u8, line, ' ');
-            _ = f.next(); // index "2:"
+    while (it.next()) |raw| {
+        if (raw.len == 0) continue;
+        if (std.ascii.isDigit(raw[0])) {
+            // "2: eth0: <FLAGS>..." — extract interface name
+            var f = mem.splitScalar(u8, trim(raw), ' ');
+            _ = f.next(); // index
             const raw_name = f.next() orelse continue;
-            const name = mem.trimRight(u8, raw_name, ":");
+            const name     = mem.trimRight(u8, raw_name, ":");
             iface = if (mem.eql(u8, name, "lo")) "" else name;
-            continue;
+        } else if (iface.len > 0) {
+            const line = trim(raw);
+            if (!mem.startsWith(u8, line, "inet ")) continue;
+            const after = line[5..];
+            const slash = mem.indexOfScalar(u8, after, '/') orelse after.len;
+            return fmt.allocPrint(a, "{s} ({s})", .{ after[0..slash], iface }) catch "unknown";
         }
-        if (iface.len == 0) continue;
-        if (!mem.startsWith(u8, line, "inet ")) continue;
-        const after = line[5..];
-        const slash = mem.indexOfScalar(u8, after, '/') orelse after.len;
-        return fmt.allocPrint(a, "{s} ({s})", .{ after[0..slash], iface }) catch "unknown";
     }
     return "unknown";
 }
@@ -394,9 +388,9 @@ fn localIP(a: Allocator) []const u8 {
 // ── GPU ───────────────────────────────────────────────────────────────────────
 
 fn gpuList(a: Allocator) [][]const u8 {
-    var result:       std.ArrayList([]const u8) = .{};
-    var nvidia_count: usize = 0;
+    var result:       std.ArrayList([]const u8)       = .{};
     var seen:         std.StringHashMapUnmanaged(void) = .{};
+    var nvidia_count: usize = 0;
 
     const drm_dir = fs.openDirAbsolute("/sys/class/drm", .{ .iterate = true }) catch
         return lspciGPUs(a);
@@ -449,12 +443,12 @@ fn lspciName(a: Allocator, dev_path: []const u8) ?[]const u8 {
     var it = mem.splitScalar(u8, out, '\n');
     while (it.next()) |line| {
         if (!mem.startsWith(u8, line, addr)) continue;
-        var count: usize = 0;
+        var quotes: usize = 0;
         var i: usize = 0;
         while (i < line.len) : (i += 1) {
             if (line[i] != '"') continue;
-            count += 1;
-            if (count == 11) {
+            quotes += 1;
+            if (quotes == 11) {
                 const start = i + 1;
                 i += 1;
                 while (i < line.len and line[i] != '"') : (i += 1) {}
@@ -476,9 +470,9 @@ fn lspciGPUs(a: Allocator) [][]const u8 {
     var list: std.ArrayList([]const u8) = .{};
     var it = mem.splitScalar(u8, run(a, &.{"lspci"}), '\n');
     while (it.next()) |line| {
-        const is_gpu = mem.indexOf(u8, line, "VGA")     != null
-                    or mem.indexOf(u8, line, "3D")      != null
-                    or mem.indexOf(u8, line, "Display")  != null;
+        const is_gpu = mem.indexOf(u8, line, "VGA")      != null
+                    or mem.indexOf(u8, line, "3D")       != null
+                    or mem.indexOf(u8, line, "Display")   != null;
         if (!is_gpu) continue;
         if (mem.indexOf(u8, line, ": ")) |ci|
             list.append(a, trim(line[ci + 2..])) catch {};
@@ -490,10 +484,8 @@ fn lspciGPUs(a: Allocator) [][]const u8 {
 // ── monitors ──────────────────────────────────────────────────────────────────
 
 fn monitors(a: Allocator) [][]const u8 {
-    const h = hyprMonitors(a);
-    if (h.len > 0) return h;
-    const x = xrandrMonitors(a);
-    if (x.len > 0) return x;
+    const h = hyprMonitors(a);  if (h.len > 0) return h;
+    const x = xrandrMonitors(a); if (x.len > 0) return x;
     return drmMonitors(a);
 }
 
@@ -571,7 +563,7 @@ fn drmMonitors(a: Allocator) [][]const u8 {
     return list.toOwnedSlice(a) catch &.{};
 }
 
-// ── theme / appearance ────────────────────────────────────────────────────────
+// ── theme ─────────────────────────────────────────────────────────────────────
 
 fn wmTheme(a: Allocator, de: []const u8, home: []const u8) []const u8 {
     if (isKDE(de)) {
@@ -596,7 +588,7 @@ fn themeInfo(a: Allocator, de: []const u8, home: []const u8) []const u8 {
     var qt = kdeGet(a, home, "kdeglobals", "[General]", "ColorScheme");
     if (qt.len == 0) qt = kdeGet(a, home, "kdeglobals", "[General]", "widgetStyle");
     const g2p = [_][]const u8{
-        fmt.allocPrint(a, "{s}/.gtkrc-2.0", .{home}) catch "",
+        fmt.allocPrint(a, "{s}/.gtkrc-2.0",            .{home}) catch "",
         fmt.allocPrint(a, "{s}/.config/gtk-2.0/gtkrc", .{home}) catch "",
     };
     const g3p = [_][]const u8{
@@ -611,7 +603,7 @@ fn iconsInfo(a: Allocator, de: []const u8, home: []const u8) []const u8 {
     var qt: []const u8 = "";
     if (isKDE(de)) qt = kdeGet(a, home, "kdeglobals", "[Icons]", "Theme");
     const g2p = [_][]const u8{
-        fmt.allocPrint(a, "{s}/.gtkrc-2.0", .{home}) catch "",
+        fmt.allocPrint(a, "{s}/.gtkrc-2.0",            .{home}) catch "",
         fmt.allocPrint(a, "{s}/.config/gtk-2.0/gtkrc", .{home}) catch "",
     };
     const g3p = [_][]const u8{
@@ -634,8 +626,8 @@ fn fontInfo(a: Allocator, de: []const u8, home: []const u8) []const u8 {
     if (isKDE(de)) {
         const raw = kdeGet(a, home, "kdeglobals", "[General]", "font");
         if (raw.len > 0) {
-            const ci  = mem.indexOfScalar(u8, raw, ',') orelse raw.len;
-            const nm  = raw[0..ci];
+            const ci = mem.indexOfScalar(u8, raw, ',') orelse raw.len;
+            const nm = raw[0..ci];
             if (ci < raw.len) {
                 const rest = raw[ci + 1..];
                 const ci2  = mem.indexOfScalar(u8, rest, ',') orelse rest.len;
@@ -644,7 +636,7 @@ fn fontInfo(a: Allocator, de: []const u8, home: []const u8) []const u8 {
         }
     }
     const g2p = [_][]const u8{
-        fmt.allocPrint(a, "{s}/.gtkrc-2.0", .{home}) catch "",
+        fmt.allocPrint(a, "{s}/.gtkrc-2.0",            .{home}) catch "",
         fmt.allocPrint(a, "{s}/.config/gtk-2.0/gtkrc", .{home}) catch "",
     };
     const g3p = [_][]const u8{
@@ -671,7 +663,8 @@ fn cursorInfo(a: Allocator, de: []const u8, home: []const u8) []const u8 {
         if (size.len == 0) size = gsGet(a, "org.gnome.desktop.interface", "cursor-size");
     }
     if (name.len == 0) {
-        const v = iniLine(readFile(a, fmt.allocPrint(a, "{s}/.icons/default/index.theme", .{home}) catch ""), "Inherits=");
+        const v = iniLine(readFile(a,
+            fmt.allocPrint(a, "{s}/.icons/default/index.theme", .{home}) catch ""), "Inherits=");
         if (v.len > 0) name = v;
     }
     if (name.len == 0) return "unknown";
@@ -696,15 +689,16 @@ pub fn collect(a: Allocator) Info {
     var info = Info{};
 
     info.user     = envOr(a, "USER", envOr(a, "LOGNAME", "user"));
-    const hn      = trim(readFile(a, "/proc/sys/kernel/hostname"));
-    info.hostname = if (hn.len > 0) hn else "localhost";
-    info.os       = blk: {
+    info.hostname = blk: {
+        const v = trim(readFile(a, "/proc/sys/kernel/hostname"));
+        break :blk if (v.len > 0) v else "localhost";
+    };
+    info.os = blk: {
         const v = iniLine(readFile(a, "/etc/os-release"), "PRETTY_NAME=");
         break :blk if (v.len > 0) v else "CachyOS";
     };
-    info.kernel   = blk: {
-        const data = readFile(a, "/proc/version");
-        var it = mem.splitScalar(u8, data, ' ');
+    info.kernel = blk: {
+        var it = mem.splitScalar(u8, readFile(a, "/proc/version"), ' ');
         _ = it.next(); _ = it.next();
         break :blk it.next() orelse "unknown";
     };
@@ -715,11 +709,11 @@ pub fn collect(a: Allocator) Info {
         if (t.len == 0) break :blk "unknown";
         break :blk fmt.allocPrint(a, "{d} (pacman)", .{mem.count(u8, t, "\n") + 1}) catch "unknown";
     };
-    info.shell    = blk: {
+    info.shell = blk: {
         const s = env(a, "SHELL");
         if (s.len > 0) break :blk fs.path.basename(s);
-        const ppid = parsePPid(readFile(a, "/proc/self/status"));
-        break :blk procComm(a, ppid);
+        const ppid = pidPPid(a, selfPid());
+        break :blk pidComm(a, ppid);
     };
     info.terminal = termName(a);
     info.locale   = localeName(a);
