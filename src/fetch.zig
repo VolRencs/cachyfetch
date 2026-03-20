@@ -411,7 +411,7 @@ fn nvidiaSMI(a: Allocator) [][]const u8 {
 }
 
 fn lspciName(a: Allocator, dev_path: []const u8) ?[]const u8 {
-    var buf: [512]u8 = undefined;
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
     const link = std.fs.readLinkAbsolute(dev_path, &buf) catch return null;
     const addr = fs.path.basename(link);
     const out  = run(a, &.{ "lspci", "-mm" });
