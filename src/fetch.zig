@@ -588,18 +588,20 @@ fn swayMonitors(a: A) [][]const u8 {
 }
 
 fn jsonStr(line: []const u8, key: []const u8) ?[]const u8 {
-    const ki = mem.indexOf(u8, line, key) orelse return null;
-    const rest = line[ki + key.len..];
-    const after = mem.trimLeft(u8, rest[mem.indexOfScalar(u8, rest, ':') orelse return null + 1..], " \t");
+    const ki    = mem.indexOf(u8, line, key) orelse return null;
+    const rest  = line[ki + key.len..];
+    const colon = mem.indexOfScalar(u8, rest, ':') orelse return null;
+    const after = mem.trimLeft(u8, rest[colon + 1..], " \t");
     if (after.len == 0 or after[0] != '"') return null;
     const end = mem.indexOfScalar(u8, after[1..], '"') orelse return null;
     return after[1 .. 1 + end];
 }
 
 fn jsonNum(line: []const u8, key: []const u8) ?[]const u8 {
-    const ki = mem.indexOf(u8, line, key) orelse return null;
-    const rest = line[ki + key.len..];
-    const after = mem.trimLeft(u8, rest[mem.indexOfScalar(u8, rest, ':') orelse return null + 1..], " \t");
+    const ki    = mem.indexOf(u8, line, key) orelse return null;
+    const rest  = line[ki + key.len..];
+    const colon = mem.indexOfScalar(u8, rest, ':') orelse return null;
+    const after = mem.trimLeft(u8, rest[colon + 1..], " \t");
     var end: usize = 0;
     while (end < after.len and std.ascii.isDigit(after[end])) : (end += 1) {}
     return if (end > 0) after[0..end] else null;
