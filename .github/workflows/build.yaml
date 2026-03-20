@@ -1,0 +1,51 @@
+name: Build
+
+on:
+  push:
+    branches: [main]
+    tags:     ["v*"]
+  pull_request:
+    branches: [main]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    container:
+      image: archlinux:latest
+
+    steps:
+      - name: Bootstrap Arch
+        run: |
+          pacman -Syu --noconfirm
+          pacman -S --noconfirm git zig
+
+      - uses: actions/checkout@v4
+
+      - name: Build
+        run: zig build -Doptimize=ReleaseFast
+
+      - name: Size
+        run: du -sh zig-out/bin/cachyfetch
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cachyfetch-x86_64
+          path: zig-out/bin/cachyfetch
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: cachyfetch-x86_64
+
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: cachyfetch
+          generate_release_notes: true
