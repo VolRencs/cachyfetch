@@ -206,14 +206,8 @@ fn deAndWM(a: A) struct { []const u8, []const u8 } {
         const v = env(a, k);
         if (v.len > 0) { de = v; break; }
     }
-    const known = [_][]const u8{ "kwin_wayland", "mutter", "gnome-shell" };
-    const dir   = fs.openDirAbsolute("/proc", .{ .iterate = true }) catch return .{ de, "" };
-    var it = dir.iterate();
-    while (it.next() catch null) |entry| {
-        if (entry.kind != .directory) continue;
-        const name = trim(readFile(a, fmt.allocPrint(a, "/proc/{s}/comm", .{entry.name}) catch ""));
-        for (known) |k| if (std.ascii.eqlIgnoreCase(name, k)) return .{ de, name };
-    }
+    if (isKDE(de))   return .{ de, "kwin_wayland" };
+    if (isGNOME(de)) return .{ de, "mutter"  };
     return .{ de, "" };
 }
 
@@ -432,53 +426,169 @@ fn lspciGPUs(a: A) [][]const u8 {
     return list.toOwnedSlice(a) catch &.{};
 }
 
-fn fmtMode(a: A, name: []const u8, res_hz: []const u8) []const u8 {
-    const at = mem.indexOfScalar(u8, res_hz, '@') orelse
-        return fmt.allocPrint(a, "{s}: {s}", .{ name, res_hz }) catch "";
-    const res    = res_hz[0..at];
-    const hz_raw = res_hz[at + 1..];
-    const hz_end = mem.indexOfScalar(u8, hz_raw, '.') orelse hz_raw.len;
-    return fmt.allocPrint(a, "{s}: {s} @ {s}Hz", .{ name, res, hz_raw[0..hz_end] }) catch "";
+fn wlPut32(b: []u8, off: *usize, v: u32) void {
+    if (off.* + 4 > b.len) return;
+    std.mem.writeInt(u32, b[off.*..][0..4], v, .little);
+    off.* += 4;
 }
 
+fn wlPutStr(b: []u8, off: *usize, s: []const u8) void {
+    const len: u32 = @intCast(s.len + 1);
+    const padded = (len + 3) & ~@as(u32, 3);
+    if (off.* + 4 + padded > b.len) return;
+    wlPut32(b, off, len);
+    @memcpy(b[off.*..][0..s.len], s);
+    b[off.* + s.len] = 0;
+    for (s.len + 1..padded) |i| b[off.* + i] = 0;
+    off.* += padded;
+}
+
+fn wlSend(sock: std.net.Stream, obj: u32, op: u16, body: []const u8) void {
+    const sz: u32 = @intCast(8 + body.len);
+    var hdr: [8]u8 = undefined;
+    std.mem.writeInt(u32, hdr[0..4], obj, .little);
+    std.mem.writeInt(u32, hdr[4..8], (sz << 16) | op, .little);
+    sock.writer().writeAll(&hdr) catch {};
+    sock.writer().writeAll(body) catch {};
+}
+
+fn wlGet32(b: []const u8, off: *usize) u32 {
+    if (off.* + 4 > b.len) return 0;
+    const v = std.mem.readInt(u32, b[off.*..][0..4], .little);
+    off.* += 4;
+    return v;
+}
+
+fn wlGetI32(b: []const u8, off: *usize) i32 { return @bitCast(wlGet32(b, off)); }
+
+fn wlGetStr(b: []const u8, off: *usize) []const u8 {
+    const len = wlGet32(b, off);
+    if (len == 0) return "";
+    const padded = (len + 3) & ~@as(u32, 3);
+    if (off.* + padded > b.len) return "";
+    const s = b[off.*..off.* + len - 1];
+    off.* += padded;
+    return s;
+}
+
+const WlOut = struct {
+    id:   u32,
+    name: []const u8 = "",
+    w:    i32 = 0,
+    h:    i32 = 0,
+    hz:   i32 = 0,
+};
+
 fn monitors(a: A) [][]const u8 {
-    const k = kscreenMonitors(a);
-    if (k.len > 0) return k;
+    const m = waylandMonitors(a);
+    if (m.len > 0) return m;
     return drmMonitors(a);
 }
 
-fn kscreenMonitors(a: A) [][]const u8 {
-    const out = run(a, &.{ "kscreen-doctor", "--outputs" });
-    if (out.len == 0) return &.{};
+fn waylandMonitors(a: A) [][]const u8 {
+    const xdg = env(a, "XDG_RUNTIME_DIR");
+    if (xdg.len == 0) return &.{};
+    const disp = envOr(a, "WAYLAND_DISPLAY", "wayland-0");
+    const path = fmt.allocPrint(a, "{s}/{s}", .{ xdg, disp }) catch return &.{};
+
+    const sock = std.net.connectUnixSocket(path) catch return &.{};
+    defer sock.close();
+
+    const REG: u32 = 2;
+    const CB1: u32 = 3;
+    var nid: u32   = 4;
+
+    const MAX: usize = 256;
+    var kinds = [_]u8{0} ** MAX;
+    kinds[REG] = 1;
+    kinds[CB1] = 2;
+
+    var outs: std.ArrayList(WlOut) = .{};
+    var b: [64]u8 = undefined;
+    var o: usize = 0;
+
+    o = 0; wlPut32(&b, &o, REG);
+    wlSend(sock, 1, 1, b[0..o]);
+
+    o = 0; wlPut32(&b, &o, CB1);
+    wlSend(sock, 1, 0, b[0..o]);
+
+    var phase: u8 = 1;
+    var cb2:   u32 = 0;
+    var rbuf: [4096]u8 = undefined;
+
+    done: while (true) {
+        var hdr: [8]u8 = undefined;
+        const hn = sock.reader().readAll(&hdr) catch break;
+        if (hn != 8) break;
+
+        const sender = std.mem.readInt(u32, hdr[0..4], .little);
+        const so     = std.mem.readInt(u32, hdr[4..8], .little);
+        const msg_sz = so >> 16;
+        if (msg_sz < 8) break;
+        const bsz  = msg_sz - 8;
+        const op   = @as(u16, @truncate(so));
+
+        if (bsz > rbuf.len) break;
+        const body = rbuf[0..bsz];
+        if (bsz > 0) {
+            const bn = sock.reader().readAll(body) catch break;
+            if (bn != bsz) break;
+        }
+
+        const kind: u8 = if (sender < MAX) kinds[sender] else 0;
+
+        if (kind == 1 and op == 0) {
+            var off: usize = 0;
+            const gn    = wlGet32(body, &off);
+            const iface = wlGetStr(body, &off);
+            const ver   = wlGet32(body, &off);
+            if (mem.eql(u8, iface, "wl_output")) {
+                const oid = nid; nid += 1;
+                if (oid < MAX) kinds[oid] = 3;
+                o = 0;
+                wlPut32(&b, &o, gn);
+                wlPutStr(&b, &o, "wl_output");
+                wlPut32(&b, &o, @min(ver, 4));
+                wlPut32(&b, &o, oid);
+                wlSend(sock, REG, 0, b[0..o]);
+                outs.append(a, .{ .id = oid }) catch {};
+            }
+        } else if (kind == 2 and op == 0) {
+            if (phase == 1) {
+                phase = 2;
+                cb2 = nid; nid += 1;
+                if (cb2 < MAX) kinds[cb2] = 2;
+                o = 0; wlPut32(&b, &o, cb2);
+                wlSend(sock, 1, 0, b[0..o]);
+            } else if (sender == cb2) {
+                break :done;
+            }
+        } else if (kind == 3) {
+            for (outs.items) |*out| {
+                if (out.id != sender) continue;
+                var off: usize = 0;
+                if (op == 1) {
+                    const flags = wlGet32(body, &off);
+                    const w     = wlGetI32(body, &off);
+                    const h     = wlGetI32(body, &off);
+                    const r     = wlGetI32(body, &off);
+                    if (flags & 1 != 0) { out.w = w; out.h = h; out.hz = r; }
+                } else if (op == 4) {
+                    out.name = wlGetStr(body, &off);
+                }
+                break;
+            }
+        }
+    }
+
     var list: std.ArrayList([]const u8) = .{};
-    var it   = mem.splitScalar(u8, out, '\n');
-    var name: []const u8 = "";
-    while (it.next()) |raw| {
-        const line = trim(raw);
-        if (line.len == 0) continue;
-        if (mem.startsWith(u8, line, "Output:")) {
-            name = "";
-            if (mem.indexOf(u8, line, "enabled") == null) continue;
-            var f = mem.splitScalar(u8, line, ' ');
-            _ = f.next(); _ = f.next();
-            name = f.next() orelse continue;
-            continue;
-        }
-        if (name.len == 0) continue;
-        if (mem.indexOf(u8, line, "*") == null or mem.indexOf(u8, line, "@") == null) continue;
-        var f = mem.splitScalar(u8, line, ' ');
-        while (f.next()) |tok| {
-            if (mem.indexOf(u8, tok, "@") == null) continue;
-            var rh = tok;
-            if (mem.indexOfScalar(u8, rh, ':')) |ci|
-                if (ci < rh.len and std.ascii.isDigit(rh[0])) { rh = rh[ci + 1..]; };
-            var end = rh.len;
-            while (end > 0 and !std.ascii.isDigit(rh[end - 1])) end -= 1;
-            if (end == 0) continue;
-            list.append(a, fmtMode(a, name, rh[0..end])) catch {};
-            name = "";
-            break;
-        }
+    for (outs.items) |out| {
+        if (out.w == 0) continue;
+        const nm = if (out.name.len > 0) out.name else "output";
+        const hz = @divTrunc(out.hz, 1000);
+        list.append(a, fmt.allocPrint(a, "{s}: {d}x{d} @ {d}Hz",
+            .{ nm, out.w, out.h, hz }) catch "") catch {};
     }
     return list.toOwnedSlice(a) catch &.{};
 }
