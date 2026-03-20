@@ -451,12 +451,12 @@ fn wlSend(sock: std.net.Stream, obj: u32, op: u16, body: []const u8) !void {
     std.mem.writeInt(u32, hdr[0..4], obj, .little);
     std.mem.writeInt(u32, hdr[4..8], (sz << 16) | op, .little);
 
-    var wbuf: [4096]u8 = undefined;
-    var writer = sock.writer(&wbuf);
+    var buf_writer = std.io.bufferedWriter(sock);
+    var writer = buf_writer.writer();
 
-    try writer.splat(&hdr);
-    try writer.splat(body);
-    try writer.flush();
+    try writer.writeAll(std.mem.asBytes(&hdr));
+    try writer.writeAll(body);
+    try buf_writer.flush();
 }
 
 fn wlGet32(b: []const u8, off: *usize) u32 {
@@ -523,13 +523,14 @@ fn waylandMonitors(a: A) [][]const u8 {
     var phase: u8 = 1;
     var cb2:   u32 = 0;
     var rbuf: [4096]u8 = undefined;
-    var sock_buf: [4096]u8 = undefined;
-    var reader = sock.reader(&sock_buf);
+    var buf_reader = std.io.bufferedReader(sock);
+    var reader = buf_reader.reader();
 
     done: while (true) {
         var hdr: [8]u8 = undefined;
 
-        try reader.takeExact(&hdr);
+        // Читаем ровно 8 байт в буфер hdr
+        try reader.readExact(&hdr); // вместо takeExact
 
         const sender = std.mem.readInt(u32, hdr[0..4], .little);
         const so     = std.mem.readInt(u32, hdr[4..8], .little);
@@ -544,7 +545,7 @@ fn waylandMonitors(a: A) [][]const u8 {
         const body = rbuf[0..bsz];
 
         if (bsz > 0) {
-            try reader.takeExact(body);
+            try reader.readExact(body); // читаем тело сообщения
         }
 
         const kind: u8 = if (sender < MAX) kinds[sender] else 0;
