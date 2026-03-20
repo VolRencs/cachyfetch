@@ -1,18 +1,16 @@
-const std   = @import("std");
-const fetch = @import("fetch");
-const mem   = std.mem;
-const fmt   = std.fmt;
+const std = @import("std");
+const core = @import("core.zig");
 
-const reset  = "\x1b[0m";
-const bold   = "\x1b[1m";
-const c1     = "\x1b[38;5;81m";
-const c2     = "\x1b[38;5;117m";
-const c3     = "\x1b[38;5;153m";
+const reset = "\x1b[0m";
+const bold = "\x1b[1m";
+const c1 = "\x1b[38;5;81m";
+const c2 = "\x1b[38;5;117m";
+const c3 = "\x1b[38;5;153m";
 const colKey = "\x1b[38;5;81m";
 const colSep = "\x1b[38;5;240m";
 const colVal = "\x1b[38;5;253m";
 const colBar = "\x1b[38;5;81m";
-const colFS  = "\x1b[38;5;240m";
+const colFS = "\x1b[38;5;240m";
 const colDim = "\x1b[38;5;240m";
 
 const logo_width = 36;
@@ -61,44 +59,47 @@ fn visLen(s: []const u8) usize {
             if (i < s.len and s[i] == 'm') i += 1;
         } else {
             // UTF-8: count only leading bytes as characters
-            if (s[i] & 0x80 == 0 or s[i] & 0x40 != 0) n += 1;
+            if ((s[i] & 0x80) == 0 or (s[i] & 0x40) != 0) n += 1;
             i += 1;
         }
     }
     return n;
 }
 
-fn padLogo(a: std.mem.Allocator) [][]const u8 {
-    var out: std.ArrayList([]const u8) = .{};
+fn padLogo(a: std.mem.Allocator) ![][]const u8 {
+    var out: std.ArrayList([]const u8) = .empty;
     for (raw_logo) |l| {
         const vl = visLen(l);
         if (vl < logo_width) {
-            const pad = a.alloc(u8, logo_width - vl) catch { out.append(a, l) catch {}; continue; };
+            const pad_len = logo_width - vl;
+            const pad = try a.alloc(u8, pad_len);
             @memset(pad, ' ');
-            out.append(a, mem.concat(a, u8, &.{ l, pad }) catch l) catch {};
+            const combined = try std.mem.concat(a, u8, &.{ l, pad });
+            a.free(pad);
+            try out.append(a, combined);
         } else {
-            out.append(a, l) catch {};
+            try out.append(a, l);
         }
     }
-    return out.toOwnedSlice(a) catch &.{};
+    return out.toOwnedSlice(a);
 }
 
 fn kv(a: std.mem.Allocator, key: []const u8, val: []const u8) []const u8 {
-    return fmt.allocPrint(a,
-        bold ++ colKey ++ "{s:<10}" ++ reset ++
-        " " ++ colSep ++ "─" ++ reset ++
-        " " ++ colVal ++ "{s}" ++ reset,
-        .{ key, val }) catch "";
+    return std.fmt.allocPrint(
+        a,
+        bold ++ colKey ++ "{s:<10}" ++ reset ++ " " ++ colSep ++ "─" ++ reset ++ " " ++ colVal ++ "{s}" ++ reset,
+        .{ key, val },
+    ) catch "";
 }
 
 fn renderBar(a: std.mem.Allocator, b: []const u8) []const u8 {
     const full = "█";
-    var buf: std.ArrayList(u8) = .{};
+    var buf: std.ArrayList(u8) = .empty;
     const w = buf.writer(a);
     w.writeAll("            ") catch {};
     var i: usize = 0;
     while (i < b.len) {
-        if (i + full.len <= b.len and mem.eql(u8, b[i .. i + full.len], full)) {
+        if (i + full.len <= b.len and std.mem.eql(u8, b[i .. i + full.len], full)) {
             w.writeAll(colBar ++ "█" ++ reset) catch {};
             i += full.len;
         } else {
@@ -113,62 +114,70 @@ fn dewm(a: std.mem.Allocator, de: []const u8, wm: []const u8) []const u8 {
     if (de.len == 0 and wm.len == 0) return "unknown";
     if (de.len == 0) return wm;
     if (wm.len == 0 or std.ascii.eqlIgnoreCase(de, wm)) return de;
-    return fmt.allocPrint(a, "{s} " ++ colDim ++ "({s})" ++ reset, .{ de, wm }) catch de;
+    return std.fmt.allocPrint(a, "{s} " ++ colDim ++ "({s})" ++ reset, .{ de, wm }) catch de;
 }
 
-fn buildLines(a: std.mem.Allocator, info: fetch.Info) [][]const u8 {
-    var lines: std.ArrayList([]const u8) = .{};
+fn appendLine(lines: *std.ArrayList([]const u8), a: std.mem.Allocator, line: []const u8) void {
+    lines.append(a, line) catch {};
+}
 
-    // header: user@hostname
-    lines.append(a, fmt.allocPrint(a,
-        bold ++ colKey ++ "{s}" ++ reset ++
-        colSep ++ "@" ++ reset ++
-        bold ++ colKey ++ "{s}" ++ reset,
-        .{ info.user, info.hostname }) catch "") catch {};
+fn appendKV(lines: *std.ArrayList([]const u8), a: std.mem.Allocator, key: []const u8, val: []const u8) void {
+    appendLine(lines, a, kv(a, key, val));
+}
 
-    // divider
-    const div_len = info.user.len + 1 + info.hostname.len;
-    var div: std.ArrayList(u8) = .{};
-    div.writer(a).writeAll(colKey) catch {};
-    for (0..div_len) |_| div.writer(a).writeAll("─") catch {};
-    div.writer(a).writeAll(reset) catch {};
-    lines.append(a, div.toOwnedSlice(a) catch "") catch {};
+fn appendList(lines: *std.ArrayList([]const u8), a: std.mem.Allocator, key: []const u8, values: [][]const u8) void {
+    for (values, 0..) |value, i| {
+        appendKV(lines, a, if (i == 0) key else "", value);
+    }
+}
 
-    lines.append(a, kv(a, "OS",       info.os))       catch {};
-    lines.append(a, kv(a, "Kernel",   info.kernel))   catch {};
-    lines.append(a, kv(a, "Uptime",   info.uptime))   catch {};
-    lines.append(a, kv(a, "Packages", info.packages)) catch {};
-    lines.append(a, kv(a, "Shell",    info.shell))    catch {};
-    lines.append(a, kv(a, "Terminal", info.terminal)) catch {};
-    lines.append(a, kv(a, "WM/DE",    dewm(a, info.de, info.wm))) catch {};
-    lines.append(a, kv(a, "WM Theme", info.wm_theme)) catch {};
-    lines.append(a, kv(a, "Theme",    info.theme))    catch {};
-    lines.append(a, kv(a, "Icons",    info.icons))    catch {};
-    lines.append(a, kv(a, "Font",     info.font))     catch {};
-    lines.append(a, kv(a, "Cursor",   info.cursor))   catch {};
-    lines.append(a, kv(a, "Locale",   info.locale))   catch {};
-    lines.append(a, kv(a, "CPU",      info.cpu))      catch {};
+fn buildLines(a: std.mem.Allocator, info: core.Info) [][]const u8 {
+    var lines: std.ArrayList([]const u8) = .empty;
+    const header = std.fmt.allocPrint(
+        a,
+        bold ++ colKey ++ "{s}" ++ reset ++ colSep ++ "@" ++ reset ++ bold ++ colKey ++ "{s}" ++ reset,
+        .{ info.user, info.hostname },
+    ) catch "";
+    appendLine(&lines, a, header);
 
-    for (info.gpu, 0..) |g, i|
-        lines.append(a, kv(a, if (i == 0) "GPU" else "", g)) catch {};
-    for (info.monitors, 0..) |m, i|
-        lines.append(a, kv(a, if (i == 0) "Monitor" else "", m)) catch {};
+    const header_vis = visLen(info.user) + 1 + visLen(info.hostname);
+    var divider: std.ArrayList(u8) = .empty;
+    const divider_writer = divider.writer(a);
+    divider_writer.writeAll(colKey) catch {};
+    for (0..header_vis) |_| divider_writer.writeAll("─") catch {};
+    divider_writer.writeAll(reset) catch {};
+    appendLine(&lines, a, divider.toOwnedSlice(a) catch "");
 
-    lines.append(a, kv(a, "Memory", info.memory))    catch {};
-    lines.append(a, renderBar(a, info.mem_bar))       catch {};
-    lines.append(a, kv(a, "Swap", info.swap))         catch {};
-    if (info.swap_bar.len > 0)
-        lines.append(a, renderBar(a, info.swap_bar))  catch {};
+    appendKV(&lines, a, "OS", info.os);
+    appendKV(&lines, a, "Kernel", info.kernel);
+    appendKV(&lines, a, "Uptime", info.uptime);
+    appendKV(&lines, a, "Packages", info.packages);
+    appendKV(&lines, a, "Shell", info.shell);
+    appendKV(&lines, a, "Terminal", info.terminal);
+    appendKV(&lines, a, "WM/DE", dewm(a, info.de, info.wm));
+    appendKV(&lines, a, "WM Theme", info.wm_theme);
+    appendKV(&lines, a, "Theme", info.theme);
+    appendKV(&lines, a, "Icons", info.icons);
+    appendKV(&lines, a, "Font", info.font);
+    appendKV(&lines, a, "Cursor", info.cursor);
+    appendKV(&lines, a, "Locale", info.locale);
+    appendKV(&lines, a, "CPU", info.cpu);
+    appendList(&lines, a, "GPU", info.gpu);
+    appendList(&lines, a, "Monitor", info.monitors);
+    appendKV(&lines, a, "Memory", info.memory);
+    appendLine(&lines, a, renderBar(a, info.mem_bar));
+    appendKV(&lines, a, "Swap", info.swap);
+    if (info.swap_bar.len > 0) appendLine(&lines, a, renderBar(a, info.swap_bar));
 
-    const disk_val = if (info.disk_fs.len > 0)
-        fmt.allocPrint(a, "{s}  " ++ colFS ++ "[{s}]" ++ reset,
-            .{ info.disk, info.disk_fs }) catch info.disk
-    else info.disk;
-    lines.append(a, kv(a, "Disk",     disk_val))      catch {};
-    lines.append(a, renderBar(a, info.disk_bar))       catch {};
-    lines.append(a, kv(a, "Local IP", info.local_ip)) catch {};
-    lines.append(a, "")                                catch {};
-    lines.append(a, fmt.allocPrint(a, "            {s}", .{info.colors}) catch "") catch {};
+    const disk_value = if (info.disk_fs.len > 0)
+        std.fmt.allocPrint(a, "{s}  " ++ colFS ++ "[{s}]" ++ reset, .{ info.disk, info.disk_fs }) catch info.disk
+    else
+        info.disk;
+    appendKV(&lines, a, "Disk", disk_value);
+    appendLine(&lines, a, renderBar(a, info.disk_bar));
+    appendKV(&lines, a, "Local IP", info.local_ip);
+    appendLine(&lines, a, "");
+    appendLine(&lines, a, std.fmt.allocPrint(a, "            {s}", .{info.colors}) catch "");
 
     return lines.toOwnedSlice(a) catch &.{};
 }
@@ -178,21 +187,25 @@ pub fn main() !void {
     defer arena.deinit();
     const a = arena.allocator();
 
-    const info  = fetch.collect(a);
-    const left  = padLogo(a);
+    const info = core.collect(a);
+
+    const left = try padLogo(a);
     const right = buildLines(a, info);
-    const pad   = try a.alloc(u8, logo_width);
+
+    const pad = try a.alloc(u8, logo_width);
     @memset(pad, ' ');
 
-    var out: std.ArrayList(u8) = .{};
+    var out: std.ArrayList(u8) = .empty;
     const w = out.writer(a);
     const n = @max(left.len, right.len);
     for (0..n) |i| {
-        const l = if (i < left.len)  left[i]  else pad;
+        const l = if (i < left.len) left[i] else pad;
         const r = if (i < right.len) right[i] else "";
-        fmt.format(w, "{s}   {s}\n", .{ l, r }) catch {};
+        std.fmt.format(w, "{s}   {s}\n", .{ l, r }) catch {};
     }
     w.writeByte('\n') catch {};
 
     _ = try std.posix.write(std.posix.STDOUT_FILENO, out.items);
+
+    a.free(pad);
 }

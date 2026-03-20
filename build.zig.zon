@@ -1,7 +1,7 @@
 .{
     .name        = .cachyfetch,
     .fingerprint = 0x1c992f6f8616db40,
-    .version     = "1.0.0",
+    .version     = "1.1.0",
     .minimum_zig_version = "0.15.0",
     .paths       = .{"."},
 }
