@@ -451,12 +451,8 @@ fn wlSend(sock: std.net.Stream, obj: u32, op: u16, body: []const u8) !void {
     std.mem.writeInt(u32, hdr[0..4], obj, .little);
     std.mem.writeInt(u32, hdr[4..8], (sz << 16) | op, .little);
 
-    var wbuf: [4096]u8 = undefined;
-    var writer = sock.writer(&wbuf); // передаём буфер
-
-    try writer.writeAll(std.mem.asBytes(&hdr));
-    try writer.writeAll(body);
-    try writer.flush();
+    try sock.writeAll(&hdr);
+    try sock.writeAll(body);
 }
 
 fn wlGet32(b: []const u8, off: *usize) u32 {
