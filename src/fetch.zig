@@ -206,21 +206,13 @@ fn deAndWM(a: A) struct { []const u8, []const u8 } {
         const v = env(a, k);
         if (v.len > 0) { de = v; break; }
     }
-    const standalone = [_][]const u8{ "hyprland","sway","river","niri","openbox","qtile","herbstluftwm" };
-    const known_wms  = [_][]const u8{ "kwin_wayland","mutter","gnome-shell","hyprland","sway","river","niri","openbox","qtile","herbstluftwm" };
-    const proc_dir = fs.openDirAbsolute("/proc", .{ .iterate = true }) catch return .{ de, "" };
-    var it = proc_dir.iterate();
+    const known = [_][]const u8{ "kwin_wayland", "mutter", "gnome-shell" };
+    const dir   = fs.openDirAbsolute("/proc", .{ .iterate = true }) catch return .{ de, "" };
+    var it = dir.iterate();
     while (it.next() catch null) |entry| {
         if (entry.kind != .directory) continue;
         const name = trim(readFile(a, fmt.allocPrint(a, "/proc/{s}/comm", .{entry.name}) catch ""));
-        if (name.len == 0) continue;
-        const found = for (known_wms) |k| {
-            if (std.ascii.eqlIgnoreCase(name, k)) break true;
-        } else false;
-        if (!found) continue;
-        if (de.len == 0) for (standalone) |s|
-            if (std.ascii.eqlIgnoreCase(name, s)) { de = name; break; };
-        return .{ de, name };
+        for (known) |k| if (std.ascii.eqlIgnoreCase(name, k)) return .{ de, name };
     }
     return .{ de, "" };
 }
@@ -250,9 +242,9 @@ fn cpuInfo(a: A) []const u8 {
         if (mem.startsWith(u8, line, "processor")) cores += 1;
     }
     if (model.len == 0) return "unknown";
-    const freq_raw = readFile(a, "/sys/devices/system/cpu/cpu0/cpufreq/scaling_max_freq");
-    if (freq_raw.len > 0) {
-        if (fmt.parseFloat(f64, trim(freq_raw))) |khz| {
+    const freq = readFile(a, "/sys/devices/system/cpu/cpu0/cpufreq/scaling_max_freq");
+    if (freq.len > 0) {
+        if (fmt.parseFloat(f64, trim(freq))) |khz| {
             return fmt.allocPrint(a, "{s} ({d}) @ {d:.2} GHz", .{ model, cores, khz / 1e6 }) catch model;
         } else |_| {}
     }
@@ -267,8 +259,10 @@ fn replaceAll(a: A, s: []const u8, needle: []const u8, rep: []const u8) []const 
     return buf;
 }
 
-fn memVals(a: A) struct { total: f64, available: f64, swap_total: f64, swap_free: f64 } {
-    var mv = std.mem.zeroes(@TypeOf(memVals(undefined)));
+const MemInfo = struct { total: f64, avail: f64, swap_total: f64, swap_free: f64 };
+
+fn memVals(a: A) MemInfo {
+    var mv = std.mem.zeroes(MemInfo);
     var it = mem.splitScalar(u8, readFile(a, "/proc/meminfo"), '\n');
     while (it.next()) |line| {
         var f = mem.splitAny(u8, line, " \t");
@@ -282,7 +276,7 @@ fn memVals(a: A) struct { total: f64, available: f64, swap_total: f64, swap_free
             idx += 1;
         }
         if      (mem.eql(u8, key, "MemTotal:"))     mv.total      = val
-        else if (mem.eql(u8, key, "MemAvailable:")) mv.available  = val
+        else if (mem.eql(u8, key, "MemAvailable:")) mv.avail      = val
         else if (mem.eql(u8, key, "SwapTotal:"))    mv.swap_total = val
         else if (mem.eql(u8, key, "SwapFree:"))     mv.swap_free  = val;
     }
@@ -314,7 +308,9 @@ fn diskInfo(a: A) struct { label: []const u8, bar: []const u8, fs_type: []const 
         if (tok.len == 0) continue;
         if (fi < 3) { fields[fi] = tok; fi += 1; }
     }
-    const p = struct { fn f(s: []const u8) f64 { return fmt.parseFloat(f64, mem.trimRight(u8, s, "M")) catch 0; } }.f;
+    const p = struct {
+        fn f(s: []const u8) f64 { return fmt.parseFloat(f64, mem.trimRight(u8, s, "M")) catch 0; }
+    }.f;
     const total = p(fields[0]);
     const used  = p(fields[1]);
     return .{
@@ -425,9 +421,9 @@ fn lspciGPUs(a: A) [][]const u8 {
     var list: std.ArrayList([]const u8) = .{};
     var it = mem.splitScalar(u8, run(a, &.{"lspci"}), '\n');
     while (it.next()) |line| {
-        const gpu = mem.indexOf(u8, line, "VGA")     != null
-                 or mem.indexOf(u8, line, "3D")      != null
-                 or mem.indexOf(u8, line, "Display")  != null;
+        const gpu = mem.indexOf(u8, line, "VGA")    != null
+                 or mem.indexOf(u8, line, "3D")     != null
+                 or mem.indexOf(u8, line, "Display") != null;
         if (!gpu) continue;
         if (mem.indexOf(u8, line, ": ")) |ci|
             list.append(a, trim(line[ci + 2..])) catch {};
@@ -436,8 +432,6 @@ fn lspciGPUs(a: A) [][]const u8 {
     return list.toOwnedSlice(a) catch &.{};
 }
 
-// Shared helper: parse "RESxHEIGHT@HZ.dec" → "RES @ HZHz"
-// Returns allocated string or null if no @ found (caller appends res only).
 fn fmtMode(a: A, name: []const u8, res_hz: []const u8) []const u8 {
     const at = mem.indexOfScalar(u8, res_hz, '@') orelse
         return fmt.allocPrint(a, "{s}: {s}", .{ name, res_hz }) catch "";
@@ -448,163 +442,45 @@ fn fmtMode(a: A, name: []const u8, res_hz: []const u8) []const u8 {
 }
 
 fn monitors(a: A) [][]const u8 {
-    const k = kscreenMonitors(a); if (k.len > 0) return k;
-    const h = hyprMonitors(a);    if (h.len > 0) return h;
-    const w = wlrMonitors(a);     if (w.len > 0) return w;
-    const s = swayMonitors(a);    if (s.len > 0) return s;
+    const k = kscreenMonitors(a);
+    if (k.len > 0) return k;
     return drmMonitors(a);
 }
 
-// kscreen-doctor --outputs (KDE Plasma Wayland)
-// Multi-line format:
-//   Output: 1 HDMI-A-1 enabled connected
-//    Modes:
-//     0: 1920x1080@60 *!
-//     1: 1920x1080@50
-// OR single-line (older):
-//   Output: 1 HDMI-A-1 enabled ... Modes: 0:1920x1080@60*! ...
 fn kscreenMonitors(a: A) [][]const u8 {
     const out = run(a, &.{ "kscreen-doctor", "--outputs" });
     if (out.len == 0) return &.{};
     var list: std.ArrayList([]const u8) = .{};
     var it   = mem.splitScalar(u8, out, '\n');
     var name: []const u8 = "";
-    var in_modes = false;
     while (it.next()) |raw| {
         const line = trim(raw);
         if (line.len == 0) continue;
-
         if (mem.startsWith(u8, line, "Output:")) {
             name = "";
-            in_modes = false;
             if (mem.indexOf(u8, line, "enabled") == null) continue;
             var f = mem.splitScalar(u8, line, ' ');
             _ = f.next(); _ = f.next();
             name = f.next() orelse continue;
-            // single-line Modes: on same line?
-            if (mem.indexOf(u8, line, "Modes:")) |mp| {
-                var mt = mem.splitScalar(u8, trim(line[mp + 6..]), ' ');
-                while (mt.next()) |mode| {
-                    if (mem.indexOf(u8, mode, "*") == null) continue;
-                    const colon = mem.indexOfScalar(u8, mode, ':') orelse continue;
-                    var rh = mode[colon + 1..];
-                    var end = rh.len;
-                    while (end > 0 and !std.ascii.isDigit(rh[end - 1])) end -= 1;
-                    list.append(a, fmtMode(a, name, rh[0..end])) catch {};
-                    name = "";
-                    break;
-                }
-            }
             continue;
         }
-
         if (name.len == 0) continue;
-
-        if (mem.eql(u8, line, "Modes:") or mem.startsWith(u8, line, "Modes:")) {
-            in_modes = true;
-            continue;
-        }
-
-        if (in_modes) {
-            // multi-line mode entry: "0: 1920x1080@60 *!" or "Mode 0: 1920x1080@60 *!"
-            if (mem.indexOf(u8, line, "*") == null) continue;
-            const colon = mem.lastIndexOfScalar(u8, line, ':') orelse continue;
-            var rh = trim(line[colon + 1..]);
-            // strip trailing markers (* !)
+        if (mem.indexOf(u8, line, "*") == null or mem.indexOf(u8, line, "@") == null) continue;
+        var f = mem.splitScalar(u8, line, ' ');
+        while (f.next()) |tok| {
+            if (mem.indexOf(u8, tok, "@") == null) continue;
+            var rh = tok;
+            if (mem.indexOfScalar(u8, rh, ':')) |ci|
+                if (ci < rh.len and std.ascii.isDigit(rh[0])) { rh = rh[ci + 1..]; };
             var end = rh.len;
             while (end > 0 and !std.ascii.isDigit(rh[end - 1])) end -= 1;
-            rh = rh[0..end];
-            list.append(a, fmtMode(a, name, rh)) catch {};
+            if (end == 0) continue;
+            list.append(a, fmtMode(a, name, rh[0..end])) catch {};
             name = "";
-            in_modes = false;
+            break;
         }
     }
     return list.toOwnedSlice(a) catch &.{};
-}
-
-fn hyprMonitors(a: A) [][]const u8 {
-    const out = run(a, &.{ "hyprctl", "monitors" });
-    if (out.len == 0) return &.{};
-    var list: std.ArrayList([]const u8) = .{};
-    var name: []const u8 = "";
-    var it = mem.splitScalar(u8, out, '\n');
-    while (it.next()) |raw| {
-        const line = trim(raw);
-        if (mem.startsWith(u8, line, "Monitor ")) {
-            var f = mem.splitScalar(u8, line, ' ');
-            _ = f.next();
-            name = f.next() orelse "";
-            continue;
-        }
-        if (name.len == 0 or mem.indexOf(u8, line, "@") == null or mem.indexOf(u8, line, " at ") == null) continue;
-        list.append(a, fmtMode(a, name, mem.sliceTo(line, ' '))) catch {};
-        name = "";
-    }
-    return list.toOwnedSlice(a) catch &.{};
-}
-
-fn wlrMonitors(a: A) [][]const u8 {
-    const out = run(a, &.{"wlr-randr"});
-    if (out.len == 0) return &.{};
-    var list: std.ArrayList([]const u8) = .{};
-    var name: []const u8 = "";
-    var it = mem.splitScalar(u8, out, '\n');
-    while (it.next()) |raw| {
-        if (raw.len == 0) continue;
-        if (raw[0] != ' ' and raw[0] != '\t') { name = mem.sliceTo(trim(raw), ' '); continue; }
-        if (name.len == 0) continue;
-        const line = trim(raw);
-        if (mem.indexOf(u8, line, " px,") == null or mem.indexOf(u8, line, "current") == null) continue;
-        const res      = mem.sliceTo(line, ' ');
-        const hz_start = mem.indexOf(u8, line, ", ") orelse continue;
-        const hz_rest  = line[hz_start + 2..];
-        const hz_end   = mem.indexOf(u8, hz_rest, " Hz") orelse hz_rest.len;
-        const hz_dot   = mem.indexOfScalar(u8, hz_rest[0..hz_end], '.') orelse hz_end;
-        list.append(a, fmt.allocPrint(a, "{s}: {s} @ {s}Hz", .{ name, res, hz_rest[0..hz_dot] }) catch "") catch {};
-        name = "";
-    }
-    return list.toOwnedSlice(a) catch &.{};
-}
-
-fn swayMonitors(a: A) [][]const u8 {
-    const out = run(a, &.{ "swaymsg", "-t", "get_outputs" });
-    if (out.len == 0) return &.{};
-    var list: std.ArrayList([]const u8) = .{};
-    var it = mem.splitScalar(u8, out, '\n');
-    var cn: []const u8 = ""; var cw: []const u8 = ""; var ch: []const u8 = ""; var chz: []const u8 = "";
-    while (it.next()) |raw| {
-        const line = trim(raw);
-        if (jsonStr(line, "\"name\""))    |v| { cn = v; cw = ""; ch = ""; chz = ""; }
-        if (jsonNum(line, "\"width\""))   |v| cw  = v;
-        if (jsonNum(line, "\"height\""))  |v| ch  = v;
-        if (jsonNum(line, "\"refresh\"")) |v| chz = v;
-        if (cn.len > 0 and cw.len > 0 and ch.len > 0 and chz.len > 0) {
-            const mhz = fmt.parseInt(u64, chz, 10) catch 0;
-            list.append(a, fmt.allocPrint(a, "{s}: {s}x{s} @ {d}Hz", .{ cn, cw, ch, mhz / 1000 }) catch "") catch {};
-            cn = ""; cw = ""; ch = ""; chz = "";
-        }
-    }
-    return list.toOwnedSlice(a) catch &.{};
-}
-
-fn jsonStr(line: []const u8, key: []const u8) ?[]const u8 {
-    const ki    = mem.indexOf(u8, line, key) orelse return null;
-    const rest  = line[ki + key.len..];
-    const colon = mem.indexOfScalar(u8, rest, ':') orelse return null;
-    const after = mem.trimLeft(u8, rest[colon + 1..], " \t");
-    if (after.len == 0 or after[0] != '"') return null;
-    const end = mem.indexOfScalar(u8, after[1..], '"') orelse return null;
-    return after[1 .. 1 + end];
-}
-
-fn jsonNum(line: []const u8, key: []const u8) ?[]const u8 {
-    const ki    = mem.indexOf(u8, line, key) orelse return null;
-    const rest  = line[ki + key.len..];
-    const colon = mem.indexOfScalar(u8, rest, ':') orelse return null;
-    const after = mem.trimLeft(u8, rest[colon + 1..], " \t");
-    var end: usize = 0;
-    while (end < after.len and std.ascii.isDigit(after[end])) : (end += 1) {}
-    return if (end > 0) after[0..end] else null;
 }
 
 fn drmMonitors(a: A) [][]const u8 {
@@ -728,7 +604,9 @@ fn cursorInfo(a: A, de: []const u8, home: []const u8) []const u8 {
         if (size.len == 0) size = gsGet(a, "org.gnome.desktop.interface", "cursor-size");
     }
     if (name.len == 0) {
-        const v = iniLine(readFile(a, fmt.allocPrint(a, "{s}/.icons/default/index.theme", .{home}) catch ""), "Inherits=");
+        const v = iniLine(
+            readFile(a, fmt.allocPrint(a, "{s}/.icons/default/index.theme", .{home}) catch ""),
+            "Inherits=");
         if (v.len > 0) name = v;
     }
     if (name.len == 0) return "unknown";
@@ -790,7 +668,7 @@ pub fn collect(a: A) Info {
     info.cursor   = cursorInfo(a, info.de, home);
     const mv = memVals(a);
     const mt = mv.total / 1024.0;
-    const mu = mt - mv.available / 1024.0;
+    const mu = mt - mv.avail / 1024.0;
     info.memory  = fmt.allocPrint(a, "{d:.0} MiB / {d:.0} MiB", .{ mu, mt }) catch "unknown";
     info.mem_bar = progBar(a, mu, mt);
     if (mv.swap_total > 0) {
