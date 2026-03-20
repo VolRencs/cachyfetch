@@ -1,4 +1,5 @@
 const std   = @import("std");
+const io    = @import("std").io;
 const A     = std.mem.Allocator;
 const mem   = std.mem;
 const fmt   = std.fmt;
@@ -445,11 +446,15 @@ fn wlPutStr(b: []u8, off: *usize, s: []const u8) void {
 
 fn wlSend(sock: std.net.Stream, obj: u32, op: u16, body: []const u8) void {
     const sz: u32 = @intCast(8 + body.len);
+
     var hdr: [8]u8 = undefined;
     std.mem.writeInt(u32, hdr[0..4], obj, .little);
     std.mem.writeInt(u32, hdr[4..8], (sz << 16) | op, .little);
-    sock.writer().writeAll(&hdr) catch {};
-    sock.writer().writeAll(body) catch {};
+
+    var wbuf: [4096]u8 = undefined;
+    const writer = sock.writer(&wbuf);
+    try writer.writeAll(&hdr);
+    try writer.writeAll(body);
 }
 
 fn wlGet32(b: []const u8, off: *usize) u32 {
@@ -507,34 +512,38 @@ fn waylandMonitors(a: A) [][]const u8 {
     var b: [64]u8 = undefined;
     var o: usize = 0;
 
-    // wl_display.get_registry(REG)
     o = 0; wlPut32(&b, &o, REG);
     wlSend(sock, 1, 1, b[0..o]);
 
-    // wl_display.sync(CB1)
     o = 0; wlPut32(&b, &o, CB1);
     wlSend(sock, 1, 0, b[0..o]);
 
     var phase: u8 = 1;
     var cb2:   u32 = 0;
     var rbuf: [4096]u8 = undefined;
+    var sock_buf: [4096]u8 = undefined;
+    const reader = sock.reader(&sock_buf);
 
     done: while (true) {
         var hdr: [8]u8 = undefined;
-        const hn = sock.reader().readAll(&hdr) catch break;
+
+        const hn = try reader.readAll(&hdr);
         if (hn != 8) break;
 
         const sender = std.mem.readInt(u32, hdr[0..4], .little);
         const so     = std.mem.readInt(u32, hdr[4..8], .little);
+
         const msg_sz = so >> 16;
         if (msg_sz < 8) break;
-        const bsz  = msg_sz - 8;
-        const op   = @as(u16, @truncate(so));
+
+        const bsz = msg_sz - 8;
+        const op  = @as(u16, @truncate(so));
 
         if (bsz > rbuf.len) break;
         const body = rbuf[0..bsz];
+
         if (bsz > 0) {
-            const bn = sock.reader().readAll(body) catch break;
+            const bn = try reader.readAll(body);
             if (bn != bsz) break;
         }
 
