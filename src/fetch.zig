@@ -46,7 +46,7 @@ fn run(a: A, argv: []const []const u8) []const u8 {
     var child = std.process.Child.init(argv, a);
     child.stdout_behavior = .Pipe;
     child.stderr_behavior = .Ignore;
-    child.start() catch return "";
+    child.spawn() catch return "";
     const out = child.stdout.?.readToEndAlloc(a, 1 << 20) catch "";
     _ = child.wait() catch {};
     return out;
