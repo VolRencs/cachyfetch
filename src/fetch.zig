@@ -445,7 +445,7 @@ fn wlPutStr(b: []u8, off: *usize, s: []const u8) void {
 }
 
 fn wlSend(sock: std.net.Stream, obj: u32, op: u16, body: []const u8) !void {
-    const sz: u32 = @intCast(u32, 8 + body.len);
+    const sz: u32 = try @intCast(u32, 8 + body.len);
 
     var hdr: [8]u8 = undefined;
     std.mem.writeInt(u32, hdr[0..4], obj, .little);
