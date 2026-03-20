@@ -5,11 +5,14 @@ pub fn build(b: *std.Build) void {
     const optimize = b.standardOptimizeOption(.{});
 
     const exe = b.addExecutable(.{
-        .name             = "cachyfetch",
-        .root_source_file = b.path("src/main.zig"),
-        .target           = target,
-        .optimize         = optimize,
+        .name     = "cachyfetch",
+        .target   = target,
+        .optimize = optimize,
     });
+    exe.root_module.addImport("fetch", b.createModule(.{
+        .root_source_file = b.path("src/fetch.zig"),
+    }));
+    exe.root_module.root_source_file = b.path("src/main.zig");
     exe.root_module.strip = optimize != .Debug;
     b.installArtifact(exe);
 

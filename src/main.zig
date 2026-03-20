@@ -1,5 +1,5 @@
-const std  = @import("std");
-const fetch = @import("fetch.zig");
+const std   = @import("std");
+const fetch = @import("fetch");
 const mem  = std.mem;
 const fmt  = std.fmt;
 
