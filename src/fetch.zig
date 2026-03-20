@@ -506,15 +506,16 @@ fn waylandMonitors(a: A) [][]const u8 {
     kinds[REG] = 1;
     kinds[CB1] = 2;
 
-    var outs: std.ArrayList(WlOut) = .{};
+    var outs: std.ArrayList(WlOut) = .init(a);
+    defer outs.deinit();
     var b: [64]u8 = undefined;
     var o: usize = 0;
 
     o = 0; wlPut32(&b, &o, REG);
-    try wlSend(sock, 1, 1, b[0..o]);
+    wlSend(sock, 1, 1, b[0..o]) catch return &.{};
 
     o = 0; wlPut32(&b, &o, CB1);
-    wlSend(sock, 1, 0, b[0..o]);
+    wlSend(sock, 1, 0, b[0..o]) catch return &.{};
 
     var phase: u8 = 1;
     var cb2:   u32 = 0;
@@ -525,8 +526,7 @@ fn waylandMonitors(a: A) [][]const u8 {
     done: while (true) {
         var hdr: [8]u8 = undefined;
 
-        // Читаем ровно 8 байт в буфер hdr
-        try reader.readExact(&hdr); // вместо takeExact
+        reader.readExact(&hdr) catch break; // ошибка чтения — выходим
 
         const sender = std.mem.readInt(u32, hdr[0..4], .little);
         const so     = std.mem.readInt(u32, hdr[4..8], .little);
@@ -541,7 +541,7 @@ fn waylandMonitors(a: A) [][]const u8 {
         const body = rbuf[0..bsz];
 
         if (bsz > 0) {
-            try reader.readExact(body); // читаем тело сообщения
+            reader.readExact(body) catch break;
         }
 
         const kind: u8 = if (sender < MAX) kinds[sender] else 0;
@@ -560,8 +560,8 @@ fn waylandMonitors(a: A) [][]const u8 {
                 wlPutStr(&b, &o, "wl_output");
                 wlPut32(&b, &o, @min(ver, 4));
                 wlPut32(&b, &o, oid);
-                wlSend(sock, REG, 0, b[0..o]);
-                outs.append(a, .{ .id = oid }) catch {};
+                wlSend(sock, REG, 0, b[0..o]) catch return &.{};
+                outs.append(.{ .id = oid }) catch {};
             }
         } else if (kind == 2 and op == 0) { // callback.done
             if (phase == 1) {
@@ -569,7 +569,7 @@ fn waylandMonitors(a: A) [][]const u8 {
                 cb2 = nid; nid += 1;
                 if (cb2 < MAX) kinds[cb2] = 2;
                 o = 0; wlPut32(&b, &o, cb2);
-                wlSend(sock, 1, 0, b[0..o]);
+                wlSend(sock, 1, 0, b[0..o]) catch return &.{};
             } else if (sender == cb2) {
                 break :done;
             }
@@ -591,13 +591,14 @@ fn waylandMonitors(a: A) [][]const u8 {
         }
     }
 
-    var list: std.ArrayList([]const u8) = .{};
+    var list: std.ArrayList([]const u8) = .init(a);
+    defer list.deinit();
     for (outs.items) |out| {
         if (out.w == 0) continue;
         const nm = if (out.name.len > 0) out.name else "output";
         const hz = @divTrunc(out.hz, 1000);
-        list.append(a, fmt.allocPrint(a, "{s}: {d}x{d} @ {d}Hz",
-            .{ nm, out.w, out.h, hz }) catch "") catch {};
+        list.append(fmt.allocPrint(a, "{s}: {d}x{d} @ {d}Hz",
+            .{ nm, out.w, out.h, hz }) catch continue) catch {};
     }
     return list.toOwnedSlice(a) catch &.{};
 }
